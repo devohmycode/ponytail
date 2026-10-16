@@ -77,7 +77,9 @@ const load = async ($: EngineInterface): Promise<Band> => ({ ...EMPTY, ...(await
 const union = (a: string[], b: string[]) => [...new Set([...a, ...b])]
 const base = (path: string) => path.replace(/\/+$/, '').split('/').pop() ?? path
 
-const claudeDir = async ($: EngineInterface) => (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await $.env.get('HOME')}/.claude`
+// Windows sets USERPROFILE, not HOME.
+const home = async ($: EngineInterface) => (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))
+const claudeDir = async ($: EngineInterface) => (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await home($)}/.claude`
 
 // `/ponytail band` (the mode tracker) leaves "off" here to hide the band. Absent flag = shown.
 async function bandHidden($: EngineInterface): Promise<boolean> {
@@ -117,7 +119,7 @@ async function readTitle($: EngineInterface, transcript: string): Promise<string
 // Where the task ledgers and the board live.
 // shortcut: ~/.config only (XDG respected); Windows would want %APPDATA%.
 async function ledgerDir($: EngineInterface) {
-  return `${(await $.env.get('XDG_CONFIG_HOME')) ?? `${await $.env.get('HOME')}/.config`}/ponytail/band`
+  return `${(await $.env.get('XDG_CONFIG_HOME')) ?? `${await home($)}/.config`}/ponytail/band`
 }
 
 const ledgerFile = (dir: string, project: string) => `${dir}/${project.replace(/[^\w.-]/g, '_')}.csv`
@@ -130,7 +132,7 @@ async function record($: EngineInterface, b: Band, options: Options) {
     const dir = await ledgerDir($)
     const file = ledgerFile(dir, b.project)
     const existing = await $.fs.read(file).catch(() => '')
-    if (existing === '') await $.process.run(['mkdir', '-p', dir])
+    // $.fs.write creates the directory: no mkdir, which Windows does not have.
     await $.fs.write(file, upsertCsv(existing, row))
     // The board is a plain file a refresh rereads, so it is rebuilt with every row.
     await writeBoard($, dir)
@@ -162,9 +164,7 @@ async function writeBoard($: EngineInterface, dir: string) {
 
 // Builds the board fresh and opens it in the browser.
 async function openBoard($: EngineInterface) {
-  const dir = await ledgerDir($)
-  await $.process.run(['mkdir', '-p', dir])
-  const file = await writeBoard($, dir)
+  const file = await writeBoard($, await ledgerDir($))
   const windows = (await $.env.get('OS')) === 'Windows_NT'
   const mac = !windows && (await $.process.run(['uname'])).stdout.trim() === 'Darwin'
   await $.process.run(windows ? ['cmd', '/c', 'start', '', file] : [mac ? 'open' : 'xdg-open', file])
@@ -310,6 +310,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey || (await bandHidden($))) return next(e)
+    // Other mods share this slot: draw theirs below ours instead of replacing it.
+    // next(e) rejects only when nothing answers beneath (the test harness): the band still draws.
+    const below = await next(e).catch(() => undefined)
 
     const b = await load($)
     const now = await $.clock.now()
@@ -335,6 +338,7 @@ export const register: Register = (on, options) => {
     }
 
     const { Box, Text, Button } = $.ui.resolve(e)
+    const stack = (mine: NonNullable<typeof below>) => (below ? <Box flexDirection="column">{mine}{below}</Box> : mine)
 
     const testsText =
       b.tests.state === 'pass'
@@ -350,7 +354,7 @@ export const register: Register = (on, options) => {
     const hasOpen = b.openCallers.length > 0
 
     if (!b.details) {
-      return (
+      return stack(
         <Box flexDirection="row" alignItems="center" gap={2} width={e.props.bodyColumns}>
           {/* A click opens the four levels: one click, one turn, no stops on levels nobody wanted. */}
           <Button key="level" plain onPress={toggle}>
@@ -430,7 +434,7 @@ export const register: Register = (on, options) => {
       metrics = <Svg source={metricsSvg(cols, b.turnCosts)} alt={cols.map(c => `${c.label} ${c.value}`).join(', ')} />
     }
 
-    return (
+    return stack(
       <Box flexDirection="column" gap={1} width={e.props.bodyColumns}>
         <Box flexDirection="row" alignItems="center" gap={1}>
           {LEVELS.map(level => (
