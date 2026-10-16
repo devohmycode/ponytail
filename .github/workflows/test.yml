@@ -34,3 +34,7 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      # Offline, no API calls: every scorer must pass its good reference and catch its bad one.
+      - name: Self-test the agentic benchmark
+        run: python benchmarks/agentic/run.py --selftest
